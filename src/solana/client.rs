@@ -8,39 +8,36 @@ use solana_sdk::{
     system_instruction,
     transaction::Transaction,
 };
-use std::{fs, path::PathBuf, str::FromStr};
+use std::{fs, str::FromStr};
 use borsh::BorshDeserialize;
 
+// Initialize Solana RPC client
 fn get_solana_client() -> RpcClient {
     RpcClient::new("https://api.devnet.solana.com".to_string()) 
 }
 
+// Define the Task structure for on-chain storage
 #[derive(BorshDeserialize, Debug, Serialize)]
 pub struct Task {
-    pub author: Pubkey,
-    pub is_done: bool,
-    pub text: String,
-    pub created_at: i64,
-    pub updated_at: i64,
+    pub author: Pubkey,  // Task creator
+    pub is_done: bool,   // Completion status
+    pub text: String,    // Task description
+    pub created_at: i64, // Creation timestamp
+    pub updated_at: i64, // Last update timestamp
 }
 
-const DISCRIMINATOR: usize = 8;
-const PUBLIC_KEY_LENGTH: usize = 32;
-const BOOL_LENGTH: usize = 1;
-const TEXT_LENGTH: usize = 4 + 400 * 4; // 400 chars
-const TIMESTAMP_LENGTH: usize = 8;
-
+// Define Task storage size
 impl Task {
-    const LEN: usize = DISCRIMINATOR + 
-        PUBLIC_KEY_LENGTH + 
-        PUBLIC_KEY_LENGTH +
-        BOOL_LENGTH + 
-        TEXT_LENGTH +  
-        TIMESTAMP_LENGTH + 
-        TIMESTAMP_LENGTH; 
+    const LEN: usize = 8  // Anchor's discriminator
+        + 32  // Task ID
+        + 32  // Author's public key
+        + 1   // Completion status
+        + (4 + 400 * 4)  // Task text (max 400 chars)
+        + 8   // Created timestamp
+        + 8;  // Updated timestamp
 }
 
-// Load Keypair from Solana CLI's id.json file
+// Load keypair from Solana CLI's id.json
 fn load_keypair() -> Result<Keypair, String> {
     let home_dir = dirs::home_dir().ok_or("Failed to find home directory")?;
     let path = home_dir.join(".config/solana/id.json");
@@ -53,6 +50,7 @@ fn load_keypair() -> Result<Keypair, String> {
     Keypair::from_bytes(&keypair_bytes).map_err(|e| format!("Failed to create keypair: {}", e))
 }
 
+// Create a new task on Solana
 pub async fn add_todo_on_solana(text: &str) -> Result<(String, String), String> {
     let payer = load_keypair()?;
     let program_id = Pubkey::from_str("7AzUsuwMKP9XFpQaVt8Nt2XyAw8UHLWMYLnenxysV9Ce").unwrap();
@@ -62,13 +60,14 @@ pub async fn add_todo_on_solana(text: &str) -> Result<(String, String), String> 
         let rpc_client = get_solana_client();
 
         let rent_exempt_balance = rpc_client
-            .get_minimum_balance_for_rent_exemption(1000)
-            .unwrap();
+            .get_minimum_balance_for_rent_exemption(Task::LEN)
+            .map_err(|e| e.to_string())?;
+
         let instruction = system_instruction::create_account(
             &payer.pubkey(),
             &task_pubkey.pubkey(),
             rent_exempt_balance, 
-            1000,
+            Task::LEN as u64,
             &program_id,
         );
 
@@ -93,6 +92,7 @@ pub async fn add_todo_on_solana(text: &str) -> Result<(String, String), String> 
     .map_err(|e| e.to_string())?
 }
 
+// Update the task status
 pub async fn update_todo_on_solana(todo_id: &str, is_done: bool) -> Result<String, String> {
     let payer = load_keypair()?;
     let task_pubkey = Pubkey::from_str(todo_id).unwrap();
@@ -123,6 +123,7 @@ pub async fn update_todo_on_solana(todo_id: &str, is_done: bool) -> Result<Strin
     .map_err(|e| e.to_string())?
 }
 
+// Fetch task details using task ID
 pub async fn fetch_task_by_id(task_id: &str) -> Result<Task, String> {
     let task_pubkey = Pubkey::from_str(task_id).map_err(|e| e.to_string())?;
 
@@ -132,15 +133,11 @@ pub async fn fetch_task_by_id(task_id: &str) -> Result<Task, String> {
         let raw_data = rpc_client
             .get_account_data(&task_pubkey)
             .map_err(|e| format!("Failed to fetch task: {}", e))?;
-        println!("🔹 Raw Data Length: {}", raw_data.len());
-        println!("🔹 Expected Task::LEN: {}", Task::LEN);
-        println!("🔹 Raw Data (Base64): {:?}", base64::encode(&raw_data));
 
+        // Ensure we only parse the necessary bytes
         let trimmed_data = &raw_data[..Task::LEN.min(raw_data.len())];
-        let task: Task = Task::try_from_slice(&trimmed_data)
+        let task: Task = Task::try_from_slice(trimmed_data)
             .map_err(|e| format!("Failed to deserialize task: {}", e))?;
-
-
 
         Ok(task) 
     })
@@ -150,6 +147,7 @@ pub async fn fetch_task_by_id(task_id: &str) -> Result<Task, String> {
     Ok(task_result?)
 }
 
+// Delete a task
 pub async fn delete_todo_on_solana(todo_id: &str) -> Result<String, String> {
     let payer = load_keypair()?;
     let task_pubkey = Pubkey::from_str(todo_id).unwrap();
